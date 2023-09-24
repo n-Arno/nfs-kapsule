@@ -1,0 +1,164 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nfs-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nfs-server
+spec:
+  selector:
+    matchLabels:
+      app: nfs-server
+  template:
+    metadata:
+      labels:
+        app: nfs-server
+    spec:
+      initContainers:
+      - name: vol-init
+        image: busybox
+        command:
+        - /bin/sh
+        - -c
+        - "mkdir -p /exports/pvc && chown -R 101:101 /exports/pvc" # UID:GID of the user needing access in client pod(s)
+        volumeMounts:
+        - name: storage
+          mountPath: /exports
+      containers:
+      - name: nfs-server
+        image: ghcr.io/n-arno/nfs-kapsule:latest
+        ports:
+        - name: rpcbind
+          containerPort: 111
+        - name: nfsd
+          containerPort: 2049
+        - name: mountd
+          containerPort: 20048
+        volumeMounts:
+        - name: storage
+          mountPath: /exports
+        securityContext:
+          privileged: true
+      volumes:
+      - name: storage
+        persistentVolumeClaim:
+          claimName: nfs-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nfs-service
+spec:
+  clusterIP: 10.32.100.1 # use fixed cluster ip because host can't resolve service name
+  ports:
+  - name: rpcbind
+    port: 111
+  - name: nfs
+    port: 2049
+  - name: mountd
+    port: 20048
+  selector:
+    app: nfs-server
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nfs-pv
+  labels:
+    app: nfs-data
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteMany
+  nfs:
+    server: "10.32.100.1" # use fixed cluster ip because host can't resolve service name
+    path: "/pvc"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nfs-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  resources:
+    requests:
+      storage: 10Gi
+  selector:
+    matchLabels:
+      app: nfs-data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: nfs-client
+  name: nfs-client
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nfs-client
+  template:
+    metadata:
+      labels:
+        app: nfs-client
+    spec:
+      securityContext:
+        fsGroup: 101
+        fsGroupChangePolicy: "Always"
+      initContainers:
+      - name: init-nginx
+        image: nginx:alpine
+        imagePullPolicy: Always
+        command:
+        - /bin/ash
+        - -c
+        - echo "$(hostname)</br>" >> /usr/share/nginx/html/index.html
+        volumeMounts:
+        - name: data
+          mountPath: /usr/share/nginx/html
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+        - name: data
+          mountPath: /usr/share/nginx/html
+        ports:
+        - containerPort: 80
+          name: http
+          protocol: TCP
+        volumeMounts:
+        - name: data
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: nfs-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: nfs-client
+  name: nfs-client
+spec:
+  ports:
+  - port: 80
+    protocol: TCP
+    targetPort: 80
+  selector:
+    app: nfs-client
+  type: LoadBalancer

@@ -1,0 +1,70 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nfs-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nfs-server
+spec:
+  selector:
+    matchLabels:
+      app: nfs-server
+  template:
+    metadata:
+      labels:
+        app: nfs-server
+    spec:
+      initContainers:
+      - name: vol-init
+        image: busybox
+        command:
+        - /bin/sh
+        - -c
+        - "mkdir -p /exports/pvc" 
+        volumeMounts:
+        - name: storage
+          mountPath: /exports
+      containers:
+      - name: nfs-server
+        image: ghcr.io/n-arno/nfs-kapsule:latest
+        ports:
+        - name: rpcbind
+          containerPort: 111
+        - name: nfsd
+          containerPort: 2049
+        - name: mountd
+          containerPort: 20048
+        volumeMounts:
+        - name: storage
+          mountPath: /exports
+        securityContext:
+          privileged: true
+      volumes:
+      - name: storage
+        persistentVolumeClaim:
+          claimName: nfs-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nfs-service
+spec:
+  clusterIP: 10.32.100.1 # use fixed cluster ip because host can't resolve service name
+  ports:
+  - name: rpcbind
+    port: 111
+  - name: nfs
+    port: 2049
+  - name: mountd
+    port: 20048
+  selector:
+    app: nfs-server

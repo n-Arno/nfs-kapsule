@@ -1,0 +1,126 @@
+#!/sbin/tini /bin/ash
+
+mount_fs()
+{
+  case $1 in
+    start)
+      mount -t nfsd nfds /proc/fs/nfsd
+      mount -t rpc_pipefs rpc_pipefs /var/lib/nfs/rpc_pipefs
+      ;;
+    stop)
+      umount /var/lib/nfs/rpc_pipefs
+      umount /proc/fs/nfsd
+      ;;
+  esac
+}
+
+rpc_bind()
+{
+  case $1 in
+    start)
+      echo "Starting RPC Bind"
+      rpcbind -w -h 127.0.0.1
+      rpcinfo
+      ;;
+    stop)
+      echo "Stopping RPC Bind"
+      pid=$(pidof rpcbind)
+      kill -TERM $pid > /dev/null 2>&1
+      ;;
+  esac
+}
+
+rpc_mountd()
+{
+  case $1 in
+    start)
+      echo "Starting Mountd"
+      rpc.mountd -V 3 -V 4 -u -p 20048
+      ;;
+    stop)
+      echo "Stopping Mountd"
+      pid=$(pidof rpc.mountd)
+      kill -TERM $pid > /dev/null 2>&1
+      ;;
+  esac
+}
+
+export_fs()
+{
+  case $1 in
+    start)
+      echo "Start export of /exportfs"
+      echo '/exports *(rw,fsid=0,sync,no_subtree_check,no_auth_nlm,insecure,no_root_squash)' > /etc/exports
+      chmod 770 -R /exports
+      exportfs -arv
+      ;;
+    stop)
+      echo "Stop export of /exportfs"
+      exportfs -auv
+      exportfs -f
+      echo > /etc/exports
+      ;;
+  esac
+}
+
+rpc_nfsd()
+{
+  case $1 in
+    start)
+      echo "Starting NFSd"
+      rpc.nfsd -V 3 -V 4 -U -G 10 -p 2049
+      ;;
+    stop)
+      echo "Stopping NFSd"
+      rpc.nfsd 0
+      ;;
+  esac
+}
+
+rpc_statd()
+{
+  case $1 in
+    start)
+      echo "Starting Statd"
+      rpc.statd --no-notify
+      ;;
+    stop)
+      echo "Stopping Statd"
+      pid=$(pidof rpc.statd)
+      kill -TERM $pid > /dev/null 2>&1
+      ;;
+  esac
+}
+
+stop()
+{
+  echo "Stopping NFS..."
+  rpc_statd stop
+  rpc_nfsd stop
+  export_fs stop
+  rpc_mountd stop
+  rpc_bind stop
+  mount_fs stop
+  echo "NFS stopped..."
+  exit 0
+}
+
+start()
+{
+  echo "Starting NFS..."
+  mount_fs start
+  rpc_bind start
+  rpc_mountd start
+  export_fs start
+  rpc_nfsd start
+  rpc_statd start
+  echo "NFS started..."
+}
+
+trap stop SIGTERM SIGINT
+
+start
+
+while true; do
+  sleep 5
+done
